@@ -2,126 +2,175 @@
 
 document.addEventListener("DOMContentLoaded", async () => {
   const outputDiv = document.getElementById("output");
-  const API_KEY = 'AIzaSyD76l49ZmMXIg0COfBaK6oSIl8SJpqoSyo';  // Replace with your actual YouTube Data API key
-  const API_URL = 'http://localhost:5000';
+  const loadingMessage = document.getElementById("loading-message");
+  const apiKeyContainer = document.getElementById("api-key-container");
+  const apiKeyInput = document.getElementById("api-key-input");
+  const saveApiKeyButton = document.getElementById("save-api-key");
+
+  const API_URL = "http://localhost:5000";
+
+    // Fetch stored API key
+    async function getStoredApiKey() {
+      return new Promise((resolve) => {
+        chrome.storage.sync.get("youtubeApiKey", (data) => {
+          resolve(data.youtubeApiKey);
+        });
+      });
+    }
+  
+    // Save API key securely
+    async function saveApiKey(apiKey) {
+      return new Promise((resolve) => {
+        chrome.storage.sync.set({ youtubeApiKey: apiKey }, () => {
+          resolve();
+        });
+      });
+    }
+  
+    // Check if API key is stored
+    let API_KEY = await getStoredApiKey();
+    if (!API_KEY) {
+      apiKeyContainer.style.display = "flex";
+    } else {
+      startFetchingComments(API_KEY);
+    }
+  
+    // Handle API key submission
+    saveApiKeyButton.addEventListener("click", async () => {
+      const enteredKey = apiKeyInput.value.trim();
+      if (enteredKey) {
+        await saveApiKey(enteredKey);
+        API_KEY = enteredKey;
+        apiKeyContainer.style.display = "none";
+        startFetchingComments(API_KEY);
+      }
+    });
+
+
+    async function startFetchingComments(API_KEY) {
+      // Get the current tab's URL
+      chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+        const url = tabs[0].url;
+        const youtubeRegex = /^https:\/\/(?:www\.)?youtube\.com\/watch\?v=([\w-]{11})/;
+        const match = url.match(youtubeRegex);
+  
+        if (match && match[1]) {
+          const videoId = match[1];
+          outputDiv.innerHTML = `<div class="section-title">YouTube Video ID</div><p>${videoId}</p><p>Fetching comments...</p>`;
+          loadingMessage.innerText = "Loading comments, please wait...";
+  
+          const comments = await fetchComments(videoId, API_KEY);
+          if (comments.length === 0) {
+            outputDiv.innerHTML += "<p>No comments found for this video.</p>";
+            return;
+          }
+  
+          outputDiv.innerHTML += `<p>Fetched ${comments.length} comments. Performing sentiment analysis...</p>`;
+          const predictions = await getSentimentPredictions(comments);
+          
+          if (predictions) {
+            // Process the predictions to get sentiment counts and sentiment data
+            const sentimentCounts = { "1": 0, "0": 0, "-1": 0 };
+            const sentimentData = []; // For trend graph
+            const totalSentimentScore = predictions.reduce((sum, item) => sum + parseInt(item.sentiment), 0);
+            predictions.forEach((item, index) => {
+              sentimentCounts[item.sentiment]++;
+              sentimentData.push({
+                timestamp: item.timestamp,
+                sentiment: parseInt(item.sentiment)
+              });
+            });
+    
+            // Compute metrics
+            const totalComments = comments.length;
+            const uniqueCommenters = new Set(comments.map(comment => comment.authorId)).size;
+            const totalWords = comments.reduce((sum, comment) => sum + comment.text.split(/\s+/).filter(word => word.length > 0).length, 0);
+            const avgWordLength = (totalWords / totalComments).toFixed(2);
+            const avgSentimentScore = (totalSentimentScore / totalComments).toFixed(2);
+    
+            // Normalize the average sentiment score to a scale of 0 to 10
+            const normalizedSentimentScore = (((parseFloat(avgSentimentScore) + 1) / 2) * 10).toFixed(2);
+    
+            // Add the Comment Analysis Summary section
+            outputDiv.innerHTML += `
+              <div class="section">
+                <div class="section-title">Comment Analysis Summary</div>
+                <div class="metrics-container">
+                  <div class="metric">
+                    <div class="metric-title">Total Comments</div>
+                    <div class="metric-value">${totalComments}</div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-title">Unique Commenters</div>
+                    <div class="metric-value">${uniqueCommenters}</div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-title">Avg Comment Length</div>
+                    <div class="metric-value">${avgWordLength} words</div>
+                  </div>
+                  <div class="metric">
+                    <div class="metric-title">Avg Sentiment Score</div>
+                    <div class="metric-value">${normalizedSentimentScore}/10</div>
+                  </div>
+                </div>
+              </div>
+            `;
+    
+            // Add the Sentiment Analysis Results section with a placeholder for the chart
+            outputDiv.innerHTML += `
+              <div class="section">
+                <div class="section-title">Sentiment Analysis Results</div>
+                <p>See the pie chart below for sentiment distribution.</p>
+                <div id="chart-container"></div>
+              </div>`;
+    
+            // Fetch and display the pie chart inside the chart-container div
+            await fetchAndDisplayChart(sentimentCounts);
+    
+            // Add the Sentiment Trend Graph section
+            outputDiv.innerHTML += `
+              <div class="section">
+                <div class="section-title">Sentiment Trend Over Time</div>
+                <div id="trend-graph-container"></div>
+              </div>`;
+    
+            // Fetch and display the sentiment trend graph
+            await fetchAndDisplayTrendGraph(sentimentData);
+    
+            // Add the Word Cloud section
+            outputDiv.innerHTML += `
+              <div class="section">
+                <div class="section-title">Comment Wordcloud</div>
+                <div id="wordcloud-container"></div>
+              </div>`;
+    
+            // Fetch and display the word cloud inside the wordcloud-container div
+            await fetchAndDisplayWordCloud(comments.map(comment => comment.text));
+    
+            // Add the top comments section
+            outputDiv.innerHTML += `
+              <div class="section">
+                <div class="section-title">Top 25 Comments with Sentiments</div>
+                <ul class="comment-list">
+                  ${predictions.slice(0, 25).map((item, index) => `
+                    <li class="comment-item">
+                      <span>${index + 1}. ${item.comment}</span><br>
+                      <span class="comment-sentiment">Sentiment: ${item.sentiment}</span>
+                    </li>`).join('')}
+                </ul>
+              </div>`;
+          }
+       
+        } else {
+          outputDiv.innerHTML = "<p>This is not a valid YouTube URL.</p>";
+        }
+      });
+    }
+  
 
   // Get the current tab's URL
-  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-    const url = tabs[0].url;
-    const youtubeRegex = /^https:\/\/(?:www\.)?youtube\.com\/watch\?v=([\w-]{11})/;
-    const match = url.match(youtubeRegex);
 
-    if (match && match[1]) {
-      const videoId = match[1];
-      outputDiv.innerHTML = `<div class="section-title">YouTube Video ID</div><p>${videoId}</p><p>Fetching comments...</p>`;
-
-      const comments = await fetchComments(videoId);
-      if (comments.length === 0) {
-        outputDiv.innerHTML += "<p>No comments found for this video.</p>";
-        return;
-      }
-
-      outputDiv.innerHTML += `<p>Fetched ${comments.length} comments. Performing sentiment analysis...</p>`;
-      const predictions = await getSentimentPredictions(comments);
-
-      if (predictions) {
-        // Process the predictions to get sentiment counts and sentiment data
-        const sentimentCounts = { "1": 0, "0": 0, "-1": 0 };
-        const sentimentData = []; // For trend graph
-        const totalSentimentScore = predictions.reduce((sum, item) => sum + parseInt(item.sentiment), 0);
-        predictions.forEach((item, index) => {
-          sentimentCounts[item.sentiment]++;
-          sentimentData.push({
-            timestamp: item.timestamp,
-            sentiment: parseInt(item.sentiment)
-          });
-        });
-
-        // Compute metrics
-        const totalComments = comments.length;
-        const uniqueCommenters = new Set(comments.map(comment => comment.authorId)).size;
-        const totalWords = comments.reduce((sum, comment) => sum + comment.text.split(/\s+/).filter(word => word.length > 0).length, 0);
-        const avgWordLength = (totalWords / totalComments).toFixed(2);
-        const avgSentimentScore = (totalSentimentScore / totalComments).toFixed(2);
-
-        // Normalize the average sentiment score to a scale of 0 to 10
-        const normalizedSentimentScore = (((parseFloat(avgSentimentScore) + 1) / 2) * 10).toFixed(2);
-
-        // Add the Comment Analysis Summary section
-        outputDiv.innerHTML += `
-          <div class="section">
-            <div class="section-title">Comment Analysis Summary</div>
-            <div class="metrics-container">
-              <div class="metric">
-                <div class="metric-title">Total Comments</div>
-                <div class="metric-value">${totalComments}</div>
-              </div>
-              <div class="metric">
-                <div class="metric-title">Unique Commenters</div>
-                <div class="metric-value">${uniqueCommenters}</div>
-              </div>
-              <div class="metric">
-                <div class="metric-title">Avg Comment Length</div>
-                <div class="metric-value">${avgWordLength} words</div>
-              </div>
-              <div class="metric">
-                <div class="metric-title">Avg Sentiment Score</div>
-                <div class="metric-value">${normalizedSentimentScore}/10</div>
-              </div>
-            </div>
-          </div>
-        `;
-
-        // Add the Sentiment Analysis Results section with a placeholder for the chart
-        outputDiv.innerHTML += `
-          <div class="section">
-            <div class="section-title">Sentiment Analysis Results</div>
-            <p>See the pie chart below for sentiment distribution.</p>
-            <div id="chart-container"></div>
-          </div>`;
-
-        // Fetch and display the pie chart inside the chart-container div
-        await fetchAndDisplayChart(sentimentCounts);
-
-        // Add the Sentiment Trend Graph section
-        outputDiv.innerHTML += `
-          <div class="section">
-            <div class="section-title">Sentiment Trend Over Time</div>
-            <div id="trend-graph-container"></div>
-          </div>`;
-
-        // Fetch and display the sentiment trend graph
-        await fetchAndDisplayTrendGraph(sentimentData);
-
-        // Add the Word Cloud section
-        outputDiv.innerHTML += `
-          <div class="section">
-            <div class="section-title">Comment Wordcloud</div>
-            <div id="wordcloud-container"></div>
-          </div>`;
-
-        // Fetch and display the word cloud inside the wordcloud-container div
-        await fetchAndDisplayWordCloud(comments.map(comment => comment.text));
-
-        // Add the top comments section
-        outputDiv.innerHTML += `
-          <div class="section">
-            <div class="section-title">Top 25 Comments with Sentiments</div>
-            <ul class="comment-list">
-              ${predictions.slice(0, 25).map((item, index) => `
-                <li class="comment-item">
-                  <span>${index + 1}. ${item.comment}</span><br>
-                  <span class="comment-sentiment">Sentiment: ${item.sentiment}</span>
-                </li>`).join('')}
-            </ul>
-          </div>`;
-      }
-    } else {
-      outputDiv.innerHTML = "<p>This is not a valid YouTube URL.</p>";
-    }
-  });
-
-  async function fetchComments(videoId) {
+  async function fetchComments(videoId,apiKey) {
     let comments = [];
     let pageToken = "";
     try {
